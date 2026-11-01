@@ -1,0 +1,29 @@
+name: Audit official sources
+on:
+  schedule:
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: audit-baseline/observations.json
+          key: rights-audit-${{ github.run_id }}
+          restore-keys: rights-audit-
+      - run: |
+          python publisher.py collect --output staging --baseline audit-baseline/observations.json
+          mkdir -p audit-baseline
+          cp staging/observations.json audit-baseline/observations.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-audit
+          path: staging/
+          retention-days: 30

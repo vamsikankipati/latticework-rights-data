@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {"id":"india-code","name":"India Code","jurisdiction":"IN","url":"https://indiacode.gov.in/"},
+    {"id":"central-gazette","name":"Gazette of India","jurisdiction":"IN","url":"https://csl.nic.in/page/innerpage/gazette-of-india.php"},
+    {"id":"consumer-affairs","name":"Department of Consumer Affairs","jurisdiction":"IN","url":"https://consumeraffairs.gov.in/pages/consumer-protection-acts"},
+    {"id":"gst-council","name":"GST Council","jurisdiction":"IN","url":"https://gstcouncil.gov.in/central-gst"},
+    {"id":"road-transport","name":"Ministry of Road Transport and Highways","jurisdiction":"IN","url":"https://morth.nic.in/Motor-Vehicle-Legislation"},
+    {"id":"patents","name":"IP India patents","jurisdiction":"IN","url":"https://ipindia.gov.in/pages/patents/chapter"},
+    {"id":"income-tax","name":"Income Tax Department","jurisdiction":"IN","url":"https://www.incometax.gov.in/iec/foportal/"},
+    {"id":"supreme-court","name":"Supreme Court of India","jurisdiction":"IN","url":"https://www.sci.gov.in/"},
+    {"id":"judgments","name":"eCourts judgments","jurisdiction":"IN","url":"https://judgments.ecourts.gov.in/pdfsearch/index.php"}
+  ],
+  "jurisdictions_pending_source_audit": [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal", "Andaman and Nicobar Islands", "Chandigarh", "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry"
+  ]
+}

@@ -1,0 +1,44 @@
+name: Publish reviewed Rights data
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Unique release tag
+        required: true
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: rights-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build reviewed signed pack
+        env:
+          RIGHTS_SIGNING_KEY: ${{ secrets.RIGHTS_SIGNING_KEY }}
+          RIGHTS_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test -n "$RIGHTS_SIGNING_KEY"
+          umask 077
+          printf '%s\n' "$RIGHTS_SIGNING_KEY" > "$RUNNER_TEMP/rights-signing-key.pem"
+          python publisher.py build --version "$RIGHTS_RELEASE_TAG" --key "$RUNNER_TEMP/rights-signing-key.pem" --output dist
+          rm "$RUNNER_TEMP/rights-signing-key.pem"
+      - name: Publish release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RIGHTS_RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release create "$RIGHTS_RELEASE_TAG" dist/india-all.sqlite.gz dist/manifest.json dist/manifest.sig --title "Rights data $RIGHTS_RELEASE_TAG" --notes 'Reviewed Rights data pack.'
+      - run: |
+          mkdir -p pages
+          cp dist/manifest.json dist/manifest.sig pages/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+      - id: deployment
+        uses: actions/deploy-pages@v4
