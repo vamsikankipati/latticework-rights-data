@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import publisher
@@ -87,6 +88,30 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(len({s["id"] for s in sources}), len(sources))
         self.assertTrue(all(publisher.official(s["url"]) for s in sources))
         self.assertEqual(len(registry["jurisdictions_pending_source_audit"]), 36)
+
+    def test_source_audit_preserves_order_and_records_unavailable_sources(self):
+        (publisher.ROOT / "catalog").mkdir()
+        sources = [{"id": key, "url": f"https://example.gov.in/{key}", "jurisdiction": "IN"} for key in ("a", "b", "c")]
+        (publisher.ROOT / "catalog/sources.json").write_text(json.dumps({"sources": sources, "jurisdictions_pending_source_audit": ["Example"]}), encoding="utf-8")
+        class Response:
+            status = 200
+            headers = {"Content-Type": "text/html"}
+            def __init__(self, url): self.url = url
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def geturl(self): return self.url
+            def read(self, limit): return b"<p>official fixture</p>"
+        class Opener:
+            def open(self, request, timeout):
+                if request.full_url.endswith("/b"): raise OSError("offline")
+                return Response(request.full_url)
+        output = publisher.ROOT / "staging"
+        with mock.patch.object(publisher.urllib.request, "build_opener", return_value=Opener()):
+            publisher.collect(argparse.Namespace(output=str(output), baseline=None))
+        report = json.loads((output / "observations.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["id"] for row in report["sources"]], ["a", "b", "c"])
+        self.assertEqual([row["status"] for row in report["sources"]], ["observed", "unavailable", "observed"])
+        self.assertEqual(report["jurisdictions_pending_source_audit"], ["Example"])
 
 
 if __name__ == "__main__":

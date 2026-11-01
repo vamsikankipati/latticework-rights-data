@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Collect source observations and build reviewed Rights SQLite packs."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import gzip
 import hashlib
@@ -92,7 +93,7 @@ def collect(args):
         baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
         previous = {item["id"]: item for item in baseline.get("sources", [])}
     report = {"checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "sources": [], "jurisdictions_pending_source_audit": catalogue["jurisdictions_pending_source_audit"]}
-    for source in catalogue["sources"]:
+    def observe(source):
         item = {"id": source["id"], "url": source["url"], "jurisdiction": source["jurisdiction"]}
         try:
             if not official(source["url"]):
@@ -112,7 +113,11 @@ def collect(args):
         item["change"] = ("unavailable" if item["status"] == "unavailable" else
                           "first_observation" if not prior or prior.get("status") != "observed" else
                           "changed" if prior.get("sha256") != item.get("sha256") else "unchanged")
-        report["sources"].append(item)
+        return item
+    # Bound concurrent requests so a handful of unavailable authorities cannot delay
+    # the entire audit by their combined timeouts. map preserves catalogue order.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        report["sources"] = list(executor.map(observe, catalogue["sources"]))
     (target / "observations.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Recorded {len(report['sources'])} sources; {sum(x['status'] == 'unavailable' for x in report['sources'])} unavailable. These observations are not reviewed legal content.")
 
