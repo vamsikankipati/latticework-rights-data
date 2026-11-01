@@ -79,6 +79,15 @@ class PublisherTests(unittest.TestCase):
         self.assertFalse(publisher.official("https://morth.nic.in.example.com/source"))
         self.assertFalse(publisher.official("http://morth.nic.in/source"))
 
+    def test_source_registry_has_each_state_and_ut_without_claiming_completion(self):
+        registry = json.loads((Path(__file__).parent / "catalog/sources.json").read_text(encoding="utf-8"))
+        expected = {"AN", "AP", "AR", "AS", "BR", "CG", "CH", "DH", "DL", "GA", "GJ", "HR", "HP", "JH", "JK", "KA", "KL", "LA", "LD", "MH", "ML", "MN", "MP", "MZ", "NL", "OD", "PB", "PY", "RJ", "SK", "TN", "TR", "TS", "UK", "UP", "WB"}
+        sources = registry["sources"]
+        self.assertEqual({s["jurisdiction"][3:] for s in sources if s["jurisdiction"].startswith("IN-")}, expected)
+        self.assertEqual(len({s["id"] for s in sources}), len(sources))
+        self.assertTrue(all(publisher.official(s["url"]) for s in sources))
+        self.assertEqual(len(registry["jurisdictions_pending_source_audit"]), 36)
+
 
 if __name__ == "__main__":
     unittest.main()

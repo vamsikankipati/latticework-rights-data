@@ -15,15 +15,25 @@ jobs:
           python-version: '3.12'
       - uses: actions/cache@v4
         with:
-          path: audit-baseline/observations.json
+          path: audit-baseline/
           key: rights-audit-${{ github.run_id }}
           restore-keys: rights-audit-
       - run: |
+          if ! command -v pdftotext >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y poppler-utils
+          fi
           python publisher.py collect --output staging --baseline audit-baseline/observations.json
+          python document_ingest.py discover --observations staging/observations.json --source-dir staging --output staging/document-candidates.json
+          python document_ingest.py collect --output staging/documents --baseline audit-baseline/documents.json
           mkdir -p audit-baseline
           cp staging/observations.json audit-baseline/observations.json
+          cp staging/documents/documents.json audit-baseline/documents.json
       - uses: actions/upload-artifact@v4
         with:
           name: source-audit
-          path: staging/
-          retention-days: 30
+          path: |
+            staging/observations.json
+            staging/document-candidates.json
+            staging/documents/documents.json
+          retention-days: 3
