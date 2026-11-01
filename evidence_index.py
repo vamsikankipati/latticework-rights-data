@@ -42,8 +42,10 @@ def build(report_path, output):
             if doc.get("status") != "collected" or text.get("status") not in ("extracted_unreviewed", "partial_text_unreviewed"):
                 continue
             doc_id = doc["id"]
-            if text.get("path") != doc_id + ".txt" or Path(doc_id).name != doc_id:
+            if text.get("path") != doc_id + ".txt" or doc.get("path") != doc_id + ".pdf" or Path(doc_id).name != doc_id:
                 raise ValueError("Unsafe evidence path")
+            if digest((report_path.parent / doc["path"]).read_bytes()) != doc.get("sha256"):
+                raise ValueError("Source PDF hash does not match the report")
             data = (report_path.parent / text["path"]).read_bytes()
             if digest(data) != text.get("sha256"):
                 raise ValueError("Extracted evidence hash does not match the report")

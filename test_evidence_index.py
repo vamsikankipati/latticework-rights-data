@@ -12,7 +12,9 @@ class EvidenceIndexTests(unittest.TestCase):
             root = Path(directory)
             content = "First page.\fNot liable unless permitted.\f".encode()
             (root / "fixture.txt").write_bytes(content)
-            report = {"schema_version": 1, "documents": [{"id": "fixture", "title": "Official fixture", "url": "https://example.gov.in/fixture.pdf", "sha256": "source-hash", "status": "collected", "text": {"path": "fixture.txt", "sha256": evidence.digest(content), "status": "extracted_unreviewed", "pages": 2}}]}
+            pdf = b"%PDF-fixture"
+            (root / "fixture.pdf").write_bytes(pdf)
+            report = {"schema_version": 1, "documents": [{"id": "fixture", "title": "Official fixture", "url": "https://example.gov.in/fixture.pdf", "path": "fixture.pdf", "sha256": evidence.digest(pdf), "status": "collected", "text": {"path": "fixture.txt", "sha256": evidence.digest(content), "status": "extracted_unreviewed", "pages": 2}}]}
             report_path = root / "documents.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
             database = root / "evidence.sqlite"
