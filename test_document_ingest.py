@@ -166,6 +166,29 @@ class DocumentIngestionTests(unittest.TestCase):
         self.assertEqual(recovered['text']['extractor'], 'recovered')
         self.assertEqual(len(aggregate), 1)
 
+    def test_candidate_backfill_round_robins_jurisdictions(self):
+        candidates = self.root / 'candidates.json'
+        observations = self.root / 'observations.json'
+        jurisdictions = ['IN', 'IN-AN', 'IN-KA', 'IN-TN']
+        sources = [{'id': 'source-' + jurisdiction.lower().replace('-', ''), 'status': 'observed',
+                    'url': f'https://example.gov.in/{jurisdiction}/laws', 'jurisdiction': jurisdiction}
+                   for jurisdiction in jurisdictions]
+        rows = []
+        source_for_id = {}
+        for jurisdiction, source in zip(jurisdictions, sources):
+            for number in range(2):
+                cid = 'candidate-' + jurisdiction.lower().replace('-', '') + '-' + str(number)
+                rows.append({'id': cid, 'url': f'https://example.gov.in/{cid}.pdf', 'label': 'Motor Vehicles Act', 'source_ids': [source['id']]})
+                source_for_id[cid] = jurisdiction
+        candidates.write_text(json.dumps({'schema_version': 1, 'candidates': rows}), encoding='utf-8')
+        observations.write_text(json.dumps({'sources': sources}), encoding='utf-8')
+        def fetch(url): return b'%PDF-1.4 fixture', url, 'application/pdf'
+
+        result = ingest.collect_candidates(candidates, observations, self.target, self.root / 'state.json', 4, fetch, self.extract)
+        selected = {source_for_id[item['id']] for item in result['documents']}
+        self.assertEqual(len(result['documents']), 4)
+        self.assertEqual(selected, set(jurisdictions))
+
     def test_extraction_reports_blank_pages(self):
         text = self.root / 'text.txt'
         text.write_text('First page\f\fThird page\f', encoding='utf-8')

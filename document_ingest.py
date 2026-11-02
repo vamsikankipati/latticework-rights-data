@@ -291,6 +291,17 @@ def collect_candidates(candidate_file, observations_file, target, state_path, li
         priority = 0 if any(term in title for term in ("rights", "consumer", "motor", "police", "tax", "gst")) else 1 if any(term in title for term in (" act", "rule", " law", "gazette")) else 2
         return (bool(when), when, priority, item["id"])
     eligible.sort(key=order)
+    grouped = {}
+    for item in eligible:
+        grouped.setdefault(order(item)[:-1], {}).setdefault(item["jurisdiction"], []).append(item)
+    eligible = []
+    for group_key in sorted(grouped):
+        jurisdictions = grouped[group_key]
+        jurisdiction_order = sorted(jurisdictions, key=lambda value: (value not in ("IN", "UNKNOWN"), value == "UNKNOWN", value))
+        while any(jurisdictions.values()):
+            for jurisdiction in jurisdiction_order:
+                if jurisdictions[jurisdiction]:
+                    eligible.append(jurisdictions[jurisdiction].pop(0))
     selected = []
     for item in eligible:
         previous = state["items"].get(item["id"], {})
