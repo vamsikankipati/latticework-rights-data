@@ -27,6 +27,7 @@ jobs:
           python document_ingest.py discover --observations staging/observations.json --source-dir staging --output staging/document-candidates.json
           python document_ingest.py collect --output staging/documents --baseline audit-baseline/documents.json
           mkdir -p audit-baseline
+          python document_ingest.py collect-candidates --candidates staging/document-candidates.json --observations staging/observations.json --output staging/candidate-documents --state audit-baseline/candidate-state.json --limit 20
           cp staging/observations.json audit-baseline/observations.json
           cp staging/documents/documents.json audit-baseline/documents.json
       - uses: actions/upload-artifact@v4
@@ -36,4 +37,5 @@ jobs:
             staging/observations.json
             staging/document-candidates.json
             staging/documents/documents.json
+            staging/candidate-documents/documents.json
           retention-days: 3

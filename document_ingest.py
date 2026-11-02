@@ -3,11 +3,13 @@
 import argparse
 import datetime as dt
 import hashlib
+import http.client
 import json
 import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -24,6 +26,13 @@ ID = re.compile(r"[a-z0-9][a-z0-9-]{0,79}\Z")
 _robots = {}
 
 
+def normalize_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc,
+        urllib.parse.quote(parsed.path, safe="/%:@-._~!$&'()*+,;="),
+        urllib.parse.quote(parsed.query, safe="/%:@-._~!$&'()*+,;=?"), ""))
+
+
 class PdfLinks(HTMLParser):
     def __init__(self, base):
         super().__init__(convert_charrefs=True)
@@ -37,8 +46,12 @@ class PdfLinks(HTMLParser):
         href = dict(attrs).get("href")
         if not href:
             return
-        url, _ = urllib.parse.urldefrag(urllib.parse.urljoin(self.base, href))
-        parsed = urllib.parse.urlparse(url)
+        try:
+            url, _ = urllib.parse.urldefrag(urllib.parse.urljoin(self.base, href))
+            url = normalize_url(url)
+            parsed = urllib.parse.urlsplit(url)
+        except ValueError:
+            return
         if official(url) and parsed.path.lower().endswith(".pdf"):
             self.current = {"url": url, "parts": []}
 
@@ -202,20 +215,29 @@ def collect_documents(catalogue, target, baseline=None, fetch=fetch_pdf, extract
         item["review_status"] = "unreviewed"
         raw_path = target / (item["id"] + ".pdf")
         text_path = target / (item["id"] + ".txt")
-        raw_path.unlink(missing_ok=True)
-        text_path.unlink(missing_ok=True)
+        raw_temporary = target / (item["id"] + ".pdf.tmp")
+        text_temporary = target / (item["id"] + ".txt.tmp")
+        raw_temporary.unlink(missing_ok=True)
+        text_temporary.unlink(missing_ok=True)
         try:
             if not official(item["url"]) or not official(item["catalogue_url"]):
                 raise ValueError("document and catalogue URLs must use official HTTPS")
             data, final_url, content_type = fetch(item["url"])
             if not official(final_url) or len(data) > MAX_SOURCE_BYTES or b"%PDF-" not in data[:1024]:
                 raise ValueError("invalid or untrusted PDF response")
-            raw_path.write_bytes(data)
+            raw_temporary.write_bytes(data)
+            raw_temporary.replace(raw_path)
             item.update(status="collected", final_url=final_url, content_type=content_type,
                         sha256=sha(data), bytes=len(data), path=raw_path.name)
-            item["text"] = extract(raw_path, text_path)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            item["text"] = extract(raw_path, text_temporary)
+            if item["text"].get("status") in ("extracted_unreviewed", "partial_text_unreviewed"):
+                text_temporary.replace(text_path)
+                item["text"]["path"] = text_path.name
+        except (OSError, ValueError, http.client.HTTPException, subprocess.SubprocessError) as exc:
             item.update(status="unavailable", error=str(exc))
+        finally:
+            raw_temporary.unlink(missing_ok=True)
+            text_temporary.unlink(missing_ok=True)
         prior = previous.get(item["id"])
         item["change"] = ("unavailable" if item["status"] != "collected" else
                           "first_observation" if not prior or prior.get("status") != "collected" else
@@ -224,6 +246,81 @@ def collect_documents(catalogue, target, baseline=None, fetch=fetch_pdf, extract
     (target / "documents.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Collected {sum(x['status'] == 'collected' for x in report['documents'])}/{len(report['documents'])} official documents; all require review.")
     return report
+
+
+def collect_candidates(candidate_file, observations_file, target, state_path, limit=20, fetch=fetch_pdf, extract=extract_pdf):
+    """Backfill a bounded batch of official candidates as unreviewed evidence."""
+    candidates = json.loads(Path(candidate_file).read_text(encoding="utf-8"))
+    observations = json.loads(Path(observations_file).read_text(encoding="utf-8"))
+    if candidates.get("schema_version") != 1 or not isinstance(candidates.get("candidates"), list):
+        raise ValueError("unsupported candidate report")
+    sources = {s["id"]: s for s in observations.get("sources", []) if s.get("status") == "observed"}
+    state_path = Path(state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {"schema_version": 1, "items": {}}
+    if state.get("schema_version") != 1 or not isinstance(state.get("items"), dict):
+        raise ValueError("unsupported candidate collection state")
+    eligible = []
+    for candidate in candidates["candidates"]:
+        cid = candidate.get("id", "")
+        url = normalize_url(candidate.get("url", ""))
+        matching = [sources[s] for s in candidate.get("source_ids", []) if s in sources]
+        if not ID.fullmatch(cid) or not official(url) or not matching:
+            continue
+        jurisdictions = {source.get("jurisdiction") for source in matching if source.get("jurisdiction")}
+        eligible.append({"id": cid, "title": (candidate.get("label") or "").strip()[:300] or "Official document candidate",
+                         "kind": "unreviewed_candidate", "jurisdiction": next(iter(jurisdictions)) if len(jurisdictions) == 1 else "UNKNOWN",
+                         "url": url, "catalogue_url": matching[0]["url"]})
+    target = Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    # Recover metadata from earlier collector versions that only saved hashes. Only
+    # accept files whose PDF still matches the recorded source hash.
+    for item in eligible:
+        prior = state["items"].get(item["id"], {})
+        raw = target / (item["id"] + ".pdf")
+        extracted = target / (item["id"] + ".txt")
+        if prior.get("status") == "collected" and "text" not in prior and raw.is_file() and extracted.is_file():
+            raw_bytes = raw.read_bytes()
+            if sha(raw_bytes) == prior.get("sha256"):
+                state["items"][item["id"]] = {**item, **prior, "review_status": "unreviewed", "path": raw.name,
+                    "bytes": len(raw_bytes), "text": describe_text(extracted, "recovered")}
+    today = dt.datetime.now(dt.timezone.utc).date()
+    def order(item):
+        previous = state["items"].get(item["id"], {})
+        when = previous.get("last_attempt", "")
+        title = item["title"].lower()
+        priority = 0 if any(term in title for term in ("rights", "consumer", "motor", "police", "tax", "gst")) else 1 if any(term in title for term in (" act", "rule", " law", "gazette")) else 2
+        return (bool(when), when, priority, item["id"])
+    eligible.sort(key=order)
+    selected = []
+    for item in eligible:
+        previous = state["items"].get(item["id"], {})
+        when = previous.get("last_attempt")
+        if when:
+            age = (today - dt.date.fromisoformat(when)).days
+            if age < (30 if previous.get("status") == "collected" else 7):
+                continue
+        selected.append(item)
+        if len(selected) >= max(1, min(limit, 20)):
+            break
+    selection = target / "selection.json"
+    selection.write_text(json.dumps({"schema_version": 1, "documents": selected}, ensure_ascii=False, indent=2), encoding="utf-8")
+    previous = target / "previous.json"
+    previous.write_text(json.dumps({"documents": list(state["items"].values())}), encoding="utf-8")
+    def polite_fetch(url):
+        time.sleep(1)
+        return fetch(url)
+    result = collect_documents(selection, target, baseline=previous, fetch=polite_fetch, extract=extract)
+    for item in result["documents"]:
+        state["items"][item["id"]] = {**item, "last_attempt": today.isoformat()}
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(state_path.name + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(state_path)
+    collected = [item for item in state["items"].values() if item.get("status") == "collected"
+                 and item.get("text", {}).get("path") == item.get("id", "") + ".txt"
+                 and (target / (item["id"] + ".pdf")).is_file() and (target / item["text"]["path"]).is_file()]
+    (target / "all-documents.json").write_text(json.dumps({"schema_version": 1, "documents": collected}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return result
 
 
 def main():
@@ -237,11 +334,19 @@ def main():
     collect.add_argument("--catalogue", default=str(ROOT / "catalog/documents.json"))
     collect.add_argument("--output", default=str(ROOT / "staging/documents"))
     collect.add_argument("--baseline")
+    candidates = commands.add_parser("collect-candidates")
+    candidates.add_argument("--candidates", required=True)
+    candidates.add_argument("--observations", required=True)
+    candidates.add_argument("--output", required=True)
+    candidates.add_argument("--state", required=True)
+    candidates.add_argument("--limit", type=int, default=20)
     args = parser.parse_args()
     if args.command == "discover":
         discover(args.observations, args.source_dir, args.output)
-    else:
+    elif args.command == "collect":
         collect_documents(args.catalogue, args.output, args.baseline)
+    else:
+        collect_candidates(args.candidates, args.observations, args.output, args.state, args.limit)
 
 
 if __name__ == "__main__":

@@ -64,6 +64,15 @@ class DocumentIngestionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.collect()
 
+    def test_unavailable_refresh_keeps_prior_evidence(self):
+        self.collect()
+        pdf = (self.target / 'sample-act.pdf').read_bytes()
+        text = (self.target / 'sample-act.txt').read_bytes()
+        result = self.collect(b'<html>temporarily unavailable</html>')['documents'][0]
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual((self.target / 'sample-act.pdf').read_bytes(), pdf)
+        self.assertEqual((self.target / 'sample-act.txt').read_bytes(), text)
+
     def test_discovery_only_lists_official_pdfs(self):
         source = {'id': 'consumer', 'status': 'observed', 'content_type': 'text/html; charset=utf-8',
                   'url': 'https://example.gov.in/index', 'final_url': 'https://example.gov.in/index'}
@@ -73,13 +82,15 @@ class DocumentIngestionTests(unittest.TestCase):
           <a href="/one.PDF#page=1">Act <b>One</b></a>
           <a href="/one.PDF">Duplicate</a>
           <a href="https://elsewhere.nic.in/two.pdf?x=1">Another</a>
+          <a href="/legal records/three.pdf">A document with spaces</a>
           <a href="https://example.gov.in.evil.test/steal.pdf">Bad</a>
           <a href="https://example.gov.in/image.png">Image</a>
         ''', encoding='utf-8')
         output = self.root / 'candidates.json'
         ingest.discover(observations, self.root, output)
         candidates = json.loads(output.read_text(encoding='utf-8'))['candidates']
-        self.assertEqual(len(candidates), 2)
+        self.assertEqual(len(candidates), 3)
+        self.assertIn('https://example.gov.in/legal%20records/three.pdf', [c['url'] for c in candidates])
         self.assertTrue(all(c['review_status'] == 'unreviewed_candidate' for c in candidates))
         self.assertIn('Act One', [c['label'] for c in candidates])
         self.assertFalse(list(self.root.glob('*.pdf')))
@@ -103,6 +114,57 @@ class DocumentIngestionTests(unittest.TestCase):
         with patch.object(ingest.urllib.request, 'build_opener', return_value=ForbiddenOpener()):
             with self.assertRaisesRegex(ValueError, 'robots.txt unavailable'):
                 ingest.check_robots('https://example.gov.in/public.pdf')
+
+    def test_candidate_backfill_is_bounded_resumable_and_unreviewed(self):
+        candidates = self.root / 'candidates.json'
+        observations = self.root / 'observations.json'
+        rows = [{'id': 'candidate-' + name, 'url': f'https://example.gov.in/{name}.pdf', 'label': name, 'source_ids': ['central', 'state']} for name in ('a', 'b', 'c')]
+        candidates.write_text(json.dumps({'schema_version': 1, 'candidates': rows}), encoding='utf-8')
+        observations.write_text(json.dumps({'sources': [
+            {'id': 'central', 'status': 'observed', 'url': 'https://example.gov.in/acts', 'jurisdiction': 'IN'},
+            {'id': 'state', 'status': 'observed', 'url': 'https://example.gov.in/state', 'jurisdiction': 'IN-KA'},
+        ]}), encoding='utf-8')
+        state = self.root / 'state.json'
+        def fetch(url): return b'%PDF-1.4 fixture', url, 'application/pdf'
+        with patch.object(ingest.time, 'sleep'):
+            first = ingest.collect_candidates(candidates, observations, self.target, state, 1, fetch, self.extract)
+            second = ingest.collect_candidates(candidates, observations, self.target, state, 1, fetch, self.extract)
+        self.assertEqual(first['documents'][0]['id'], 'candidate-a')
+        self.assertEqual(second['documents'][0]['id'], 'candidate-b')
+        self.assertEqual(first['documents'][0]['jurisdiction'], 'UNKNOWN')
+        self.assertEqual(first['documents'][0]['review_status'], 'unreviewed')
+        self.assertEqual(len(json.loads(state.read_text(encoding='utf-8'))['items']), 2)
+        self.assertEqual(len(json.loads((self.target / 'all-documents.json').read_text(encoding='utf-8'))['documents']), 2)
+
+    def test_candidate_backfill_recovers_hash_only_state_without_refetching(self):
+        candidates = self.root / 'candidates.json'
+        observations = self.root / 'observations.json'
+        candidate = {'id': 'candidate-legacy', 'url': 'https://example.gov.in/legacy.pdf', 'label': 'Legacy Act', 'source_ids': ['central']}
+        candidates.write_text(json.dumps({'schema_version': 1, 'candidates': [candidate]}), encoding='utf-8')
+        observations.write_text(json.dumps({'sources': [
+            {'id': 'central', 'status': 'observed', 'url': 'https://example.gov.in/acts', 'jurisdiction': 'IN'},
+        ]}), encoding='utf-8')
+        self.target.mkdir(parents=True)
+        pdf = b'%PDF-1.4 legacy fixture'
+        (self.target / 'candidate-legacy.pdf').write_bytes(pdf)
+        (self.target / 'candidate-legacy.txt').write_text('Citizen rights reference.', encoding='utf-8')
+        today = ingest.dt.datetime.now(ingest.dt.timezone.utc).date().isoformat()
+        state = self.root / 'state.json'
+        state.write_text(json.dumps({'schema_version': 1, 'items': {'candidate-legacy': {
+            'status': 'collected', 'sha256': ingest.sha(pdf), 'last_attempt': today,
+        }}}), encoding='utf-8')
+
+        def fail_fetch(_url):
+            self.fail('recovered candidates should not be fetched again in this run')
+
+        result = ingest.collect_candidates(candidates, observations, self.target, state, 1, fail_fetch, self.extract)
+        recovered = json.loads(state.read_text(encoding='utf-8'))['items']['candidate-legacy']
+        aggregate = json.loads((self.target / 'all-documents.json').read_text(encoding='utf-8'))['documents']
+        self.assertEqual(result['documents'], [])
+        self.assertEqual(recovered['review_status'], 'unreviewed')
+        self.assertEqual(recovered['text']['status'], 'extracted_unreviewed')
+        self.assertEqual(recovered['text']['extractor'], 'recovered')
+        self.assertEqual(len(aggregate), 1)
 
     def test_extraction_reports_blank_pages(self):
         text = self.root / 'text.txt'
